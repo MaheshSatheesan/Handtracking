@@ -1,0 +1,94 @@
+import cv2
+import mediapipe as mp
+import time
+
+mp_drawing = mp.solutions.drawing_utils
+mp_hands = mp.solutions.hands
+
+# Number of previous thumb positions to use for averaging
+AVERAGING_WINDOW_SIZE = 10
+COORDINATE_CHANGE_THRESHOLD = 100  # Minimum change to consider a new position
+BOX_SIZE = 500  # Initial size of the bounding box
+
+def is_near_edge(x, y, box_size, edge_threshold=50):
+    return x < edge_threshold or x > (box_size - edge_threshold) or y < edge_threshold or y > (box_size - edge_threshold)
+
+def main():
+    # Initialize the hand tracking model
+    hands = mp_hands.Hands()
+
+    # Open the camera feed
+    cap = cv2.VideoCapture(1)  # 0 for the default camera, change to a specific camera index if needed
+
+    thumb_positions = []  # List to store recent thumb positions for averaging
+    prev_thumb_position = None
+
+    bounding_box = [(0, 0), (BOX_SIZE, BOX_SIZE)]
+    start_time = time.time()
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        # Convert the frame to RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # Process the frame with the hand tracking model
+        results = hands.process(frame_rgb)
+
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                thumb_tip = hand_landmarks.landmark[4]  # Landmark index 4 is the tip of the thumb
+
+                if thumb_tip.x and thumb_tip.y:
+                    thumb_x, thumb_y = int(thumb_tip.x * frame.shape[1]), int(thumb_tip.y * frame.shape[0])
+
+                    if prev_thumb_position is not None:
+                        # Calculate the change in coordinates
+                        delta_x = abs(thumb_x - prev_thumb_position[0])
+                        delta_y = abs(thumb_y - prev_thumb_position[1])
+
+                        if delta_x > COORDINATE_CHANGE_THRESHOLD or delta_y > COORDINATE_CHANGE_THRESHOLD:
+                            thumb_positions.append((thumb_x, thumb_y))
+
+                            # Keep only the most recent positions up to the window size
+                            if len(thumb_positions) > AVERAGING_WINDOW_SIZE:
+                                thumb_positions.pop(0)
+
+                            # Calculate the average thumb position
+                            avg_thumb_x = int(sum(x for x, _ in thumb_positions) / len(thumb_positions))
+                            avg_thumb_y = int(sum(y for _, y in thumb_positions) / len(thumb_positions))
+
+                            # Check if the average is near the edge of the bounding box
+                            if is_near_edge(avg_thumb_x - bounding_box[0][0], avg_thumb_y - bounding_box[0][1], BOX_SIZE):
+                                if time.time() - start_time > 2:
+                                    # Rearrange the bounding box to be centered around the new average position
+                                    half_box_size = BOX_SIZE // 2
+                                    bounding_box = [(avg_thumb_x - half_box_size, avg_thumb_y - half_box_size),
+                                                    (avg_thumb_x + half_box_size, avg_thumb_y + half_box_size)]
+                                    start_time = time.time()
+
+                    prev_thumb_position = (thumb_x, thumb_y)
+
+                # Draw the bounding box
+                cv2.rectangle(frame, bounding_box[0], bounding_box[1], (0, 255, 0), 2)
+
+                # Draw landmarks on the frame for visualization
+                mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+        # Always display the averaged coordinates on the frame
+        if len(thumb_positions) > 0:
+            cv2.putText(frame, f"Avg Thumb: ({avg_thumb_x}, {avg_thumb_y})", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        # Display the frame
+        cv2.imshow('Hand Tracking', frame)
+
+        if cv2.waitKey(1) & 0xFF == 27:  # Press Esc to exit
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
